@@ -54,10 +54,10 @@ module CanCan
       def conditions
         if @rules.size == 1 && @rules.first.base_behavior
           # Return the conditions directly if there's just one definition
-          tableized_conditions(@rules.first.conditions).dup
+          get_last_parents tableized_conditions(@rules.first.conditions).dup
         else
           @rules.reverse.inject(false_sql) do |sql, rule|
-            merge_conditions(sql, tableized_conditions(rule.conditions).dup, rule.base_behavior)
+            merge_conditions(sql, get_last_parents(tableized_conditions(rule.conditions).dup), rule.base_behavior)
           end
         end
       end
@@ -112,6 +112,41 @@ module CanCan
       end
 
       private
+
+      # As of Rails 3.2.6, ActiveRecord::PredicateBuilder will not
+      # correctly parse hashes nested more than one level deep.
+      # For example:
+      #
+      #   :article=>{:category=>{:visible=>true}}}
+      #
+      # will produce an invalid where clause:
+      #
+      #   '... WHERE "articles"."categories" = 1 ...'
+      #
+      # Given we are already building correct joins from these
+      # deeply nested ability definitions, we can simply pass the
+      # last parent hash from tablized_conditions to .where() and
+      # it will be parsed correctly by PredicateBuilder.
+      def get_last_parents(enum, result={})
+        return enum unless enum.is_a? Hash
+        enum.inject(result) do |result_hash, (key,value)|
+          if value.is_a? Hash
+            value  = value.dup
+            nested = value.inject({}) do |nested,(k,v)|
+              if v.is_a? Hash
+                value.delete k
+                nested[k] = v
+              else
+                result_hash[key] = value
+              end
+              result_hash.merge!(get_last_parents(nested, result_hash))
+            end
+          else
+            result_hash[key] = value
+          end
+          result_hash
+        end
+      end
 
       def override_scope
         conditions = @rules.map(&:conditions).compact
